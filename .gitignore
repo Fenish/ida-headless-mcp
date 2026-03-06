@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+
+# Hypothesis
+.hypothesis/
+
+# Pytest
+.pytest_cache/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Kiro settings (contains local paths)
+.kiro/settings/
+
+# OS
+Thumbs.db
+.DS_Store
