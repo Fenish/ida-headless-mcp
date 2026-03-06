@@ -17,6 +17,7 @@ from typing import Any
 
 from ida_headless_mcp.batch_manager import BatchManager
 from ida_headless_mcp.config import ServerConfig
+from ida_headless_mcp.errors import McpToolError
 from ida_headless_mcp.ida_bridge import IdaBridge
 from ida_headless_mcp.session_manager import SessionManager
 from ida_headless_mcp.tools import (
@@ -34,6 +35,7 @@ from ida_headless_mcp.tools import (
     scripting,
     search,
     segments,
+    sessions,
     signatures,
     strings,
     types,
@@ -79,6 +81,23 @@ class IdaMcpServer:
         ``description``, and ``module`` keys.  This registry is used both
         for MCP SDK integration and for the server info resource.
         """
+
+        # -- Sessions (tools/sessions.py) --
+        self._tools["create_session"] = {
+            "handler": sessions.create_session,
+            "description": "Create a new IDA analysis session for a binary file.",
+            "module": "sessions",
+        }
+        self._tools["list_sessions"] = {
+            "handler": sessions.list_sessions,
+            "description": "List all active IDA analysis sessions.",
+            "module": "sessions",
+        }
+        self._tools["close_session"] = {
+            "handler": sessions.close_session,
+            "description": "Close an IDA analysis session.",
+            "module": "sessions",
+        }
 
         # -- Functions (tools/functions.py) --
         self._tools["list_functions"] = {
@@ -515,18 +534,38 @@ class IdaMcpServer:
         mcp_server = McpSdkServer("ida-headless-mcp")
 
         # Capture self for closures
+        server_ref = self
         tools_registry = self._tools
 
         @mcp_server.list_tools()
         async def handle_list_tools() -> list[Tool]:
-            return [
-                Tool(
-                    name=name,
-                    description=info["description"],
-                    inputSchema={"type": "object", "properties": {}},
-                )
-                for name, info in tools_registry.items()
-            ]
+            import inspect
+            # Internal params injected by call_tool, not user-facing
+            _injected = {"session_manager", "bridge", "batch_manager"}
+            result = []
+            for name, info in tools_registry.items():
+                sig = inspect.signature(info["handler"])
+                properties = {}
+                required = []
+                for pname, param in sig.parameters.items():
+                    if pname in _injected:
+                        continue
+                    # Infer JSON schema type from annotation or default
+                    annotation = param.annotation
+                    if annotation is bool or (param.default is not inspect.Parameter.empty and isinstance(param.default, bool)):
+                        ptype = "boolean"
+                    elif annotation is int:
+                        ptype = "integer"
+                    else:
+                        ptype = "string"
+                    properties[pname] = {"type": ptype}
+                    if param.default is inspect.Parameter.empty:
+                        required.append(pname)
+                schema = {"type": "object", "properties": properties}
+                if required:
+                    schema["required"] = required
+                result.append(Tool(name=name, description=info["description"], inputSchema=schema))
+            return result
 
         @mcp_server.call_tool()
         async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
@@ -534,16 +573,42 @@ class IdaMcpServer:
                 return [TextContent(type="text", text=f"Unknown tool: {name}")]
             handler = tools_registry[name]["handler"]
             try:
-                result = await handler(**arguments)
+                # Inject server internals based on handler signature
+                import inspect
+                sig = inspect.signature(handler)
+                params = list(sig.parameters.keys())
+                kwargs = dict(arguments) if arguments else {}
+
+                # Inject session_manager, bridge, batch_manager as needed
+                if "session_manager" in params and "session_manager" not in kwargs:
+                    kwargs["session_manager"] = server_ref.session_manager
+                if "bridge" in params and "bridge" not in kwargs:
+                    kwargs["bridge"] = server_ref.bridge
+                if "batch_manager" in params and "batch_manager" not in kwargs:
+                    kwargs["batch_manager"] = server_ref.batch_manager
+
+                result = await handler(**kwargs)
                 import json as _json
-                if hasattr(result, "__dataclass_fields__"):
+                if isinstance(result, list):
+                    from dataclasses import asdict
+                    items = []
+                    for item in result:
+                        if hasattr(item, "__dataclass_fields__"):
+                            items.append(asdict(item))
+                        else:
+                            items.append(item)
+                    text = _json.dumps(items, default=str)
+                elif hasattr(result, "__dataclass_fields__"):
                     from dataclasses import asdict
                     text = _json.dumps(asdict(result), default=str)
-                elif isinstance(result, (dict, list)):
+                elif isinstance(result, dict):
                     text = _json.dumps(result, default=str)
                 else:
                     text = str(result)
                 return [TextContent(type="text", text=text)]
+            except McpToolError as exc:
+                import json as _json
+                return [TextContent(type="text", text=_json.dumps(exc.to_dict()))]
             except Exception as exc:
                 return [TextContent(type="text", text=f"Error: {exc}")]
 

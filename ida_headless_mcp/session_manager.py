@@ -257,13 +257,18 @@ class SessionManager:
         # Create temp command directory for script/result exchange
         command_dir = Path(tempfile.mkdtemp(prefix=f"ida_mcp_{session_id}_"))
 
-        # Select IDA executable
+        # Select IDA executable — prefer 64-bit variant, fall back to unified binary
         suffix = ".exe" if platform.system() == "Windows" else ""
         if architecture == "64":
-            ida_binary = self.config.ida_binary_64
+            preferred = self.config.ida_binary_64  # e.g. idat64
+            fallback = self.config.ida_binary_32   # e.g. idat (IDA 9.0 unified)
         else:
-            ida_binary = self.config.ida_binary_32
-        ida_executable = os.path.join(self.config.ida_path, f"{ida_binary}{suffix}")
+            preferred = self.config.ida_binary_32
+            fallback = None
+
+        ida_executable = os.path.join(self.config.ida_path, f"{preferred}{suffix}")
+        if not os.path.isfile(ida_executable) and fallback:
+            ida_executable = os.path.join(self.config.ida_path, f"{fallback}{suffix}")
 
         # Resolve the command loop script path
         command_loop_script = str(

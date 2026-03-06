@@ -36,6 +36,8 @@ def _make_valid_config(**overrides) -> ServerConfig:
 # ---------------------------------------------------------------------------
 
 EXPECTED_TOOLS = sorted([
+    # sessions
+    "create_session", "list_sessions", "close_session",
     # functions
     "list_functions", "get_function_details", "rename_function",
     "create_function", "delete_function",
